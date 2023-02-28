@@ -1,0 +1,103 @@
+---
+title: "Cancer TCGA"
+author: "Ming-Wen Hu"
+output: html_document
+---
+
+## Result summary
+
+I downloaded mRNA expression of **PD1**(PDCD1) and **PD-L1**(CD274) in 36 different cohorts (**Primary Solid Tumor** and **Recurrent Solid Tumor**) from TCGA website. After analyzing their median normalized RSEM values, I found some valuable information across the cohorts. First, the top cohort with the highest combined expressions (Table: MedianExpresison) was **THYM** (Thymoma). The finding also agrees with a previous study that **PD1** and **PD-L1** were both expressed in thymoma patients (Owen et. al. *Journal of Thoracic Oncology* 2018). Second, the scatterplot of median expression in 36 cohorts showed a Pearson correlation of 0.48 between expression of **PD-1** and **PD-L1**. This may hint that their expression profiles may serve as a diagnostic or therapeutic tool in solid tumor patients. For example, there were 21 cohorts with higher correlation (i.e. |log2FC| <1) between **PD-1** and **PD-L1** (Table: ScatterplotData), indicating that we may only need one of them as an indicator in diagnosis. On the other hand, those remaining 15 cohorts with lower correlation (i.e. |log2FC| >1) may represent different phenotypes in solid tumors. Two examples in this group are **DLBC** and **KICH** (Kidney Chromophobe). In **DLBC**, median expression of **PD-1** (8.89) was higher than median expression of **PD-L1**(6.03). However, the expression pattern was opposite in **KICH** (**PD1**: 2.16, **PD-L1**: 6.14).  
+
+## Packages
+
+```{r, message=FALSE}
+rm(list=ls())
+
+library('ggplot2')
+library('dplyr')
+library('reshape2')
+require('FirebrowseR')
+require("ggrepel")
+
+```
+
+## Download cancer data from TCGA
+
+"TP" for Primary Solid Tumor, "TR" for Recurrent Solid Tumor, "PDCD1" gene for PD-1, "CD274" gene for PD-L1
+
+```{r}
+datalist = list()
+for (i in 1:13) {
+  expdata = Samples.mRNASeq(format = "csv", gene = c("PDCD1","CD274"),
+                            page_size = 2000,protocol = 'RSEM',sample_type = c('TP','TR'),page = i)
+  
+  if (i==1) {
+    names = colnames(expdata)
+  } else {
+    colnames(expdata) = names
+    
+  }
+  
+  datalist[[i]] <- expdata 
+  
+}
+
+DataExp = do.call(rbind, datalist)
+head(DataExp)
+```
+
+## Data cleaning
+
+```{r}
+DataExp = DataExp %>% filter(! DataExp$expression_log2 %in% 'None')  # remove None
+
+DataExp$expression_log2 = as.numeric(DataExp$expression_log2) # Convert character to numeric 
+
+dataremove = c()    # remove data with only one gene expressed
+
+for (i in DataExp$tcga_participant_barcode) {
+    datasub = DataExp %>% filter(tcga_participant_barcode == i)
+    if (length(unique(datasub$gene)) <2 ){
+      dataremove = c(dataremove, i)
+  }
+}
+
+DataExp_remove = DataExp %>% filter(tcga_participant_barcode %in% dataremove)   # removed data
+DataExp_clean = DataExp %>% filter(! tcga_participant_barcode %in% dataremove)  # clean data
+head(DataExp_clean)
+```
+
+## Calculate median RSEM expression per cohort for PD-1 and PD-L1
+
+```{r,message=FALSE}
+MedianExp = DataExp_clean %>% group_by(cohort,gene) %>% summarise(MedExp = median(expression_log2)) %>% dcast(cohort ~ gene)
+MedianExp = MedianExp %>% arrange(desc(MedianExp$CD274+MedianExp$PDCD1))  # sort by combined expression
+
+write.table(MedianExp,'MedianExpresison.tsv',row.names=FALSE, sep="\t",quote=FALSE)
+head(MedianExp)
+```
+
+## Generate scatterplot median RSEM expression per cohort for PD-1 and PD-L1
+
+```{r ,message=FALSE, fig, fig.height = 8, fig.width = 8}
+MedianExp_plot = MedianExp
+MedianExp_plot$Log2FC = abs(MedianExp_plot$PDCD1 - MedianExp_plot$CD274) # |log2FC| between PD-1 and PD-L1
+MedianExp_plot = MedianExp_plot %>% mutate(FCgroup = case_when(Log2FC >1  ~ "|Log2FC| >1", Log2FC <1  ~ "|Log2FC| <1")) %>% arrange(desc(Log2FC))
+head(MedianExp_plot)
+tail(MedianExp_plot)
+write.table(MedianExp_plot,'ScatterplotData.tsv',row.names=FALSE, sep="\t",quote=FALSE)
+
+CorPearson = cor(MedianExp_plot$CD274,MedianExp_plot$PDCD1)  # Pearson correlation
+
+ggplot(MedianExp_plot, aes(x=PDCD1, y=CD274)) +
+  geom_point(aes(color=FCgroup)) +geom_abline(linetype=3)+
+  theme_classic()+scale_color_manual(values=c("blue", "magenta"))+
+  theme(legend.title = element_blank())+
+  scale_x_continuous(name ='Expression: PD-1(PDCD1)',limits = c(0,10))+
+  scale_y_continuous(name ='Expression: PD-L1(CD274)',limits = c(0,10))+
+  geom_text_repel(aes(label = cohort),max.overlaps = 15)+
+  geom_text(aes(2, 9, label=paste("Pearson:", round(CorPearson,2))),size=5)
+  
+ggsave('Scatterplot.jpeg',width = 8,height = 6)
+```
+
